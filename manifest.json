@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "GCal 予定コピー",
+  "version": "0.5",
+  "description": "Googleカレンダーの予定ポップアップに「コピー」ボタンを追加します",
+  "content_scripts": [
+    {
+      "matches": ["https://calendar.google.com/calendar/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
