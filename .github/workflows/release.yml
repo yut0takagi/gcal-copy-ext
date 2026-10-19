@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+  # Workload Identity Federation と、配布物の出どころの署名(actions/attest)に使う
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      ZIP: gcal-copy-ext-${{ github.ref_name }}.zip
+      API: https://chromewebstore.googleapis.com
+      ITEM: publishers/${{ vars.CWS_PUBLISHER_ID }}/items/${{ vars.CWS_EXTENSION_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify the tag matches manifest.json
+        run: |
+          MANIFEST_VERSION=$(jq -r .version manifest.json)
+          if [ "$MANIFEST_VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match manifest version ${MANIFEST_VERSION}"
+            exit 1
+          fi
+
+      # 開発用のファイルを除いた残りをストア用の zip にする
+      - name: Package
+        run: zip -r -X "$ZIP" . -x '.git/*' '.github/*' '*.md' '.gitignore'
+
+      # 公開した zip がこのコミットから作られたことを誰でも確かめられる:
+      #   gh attestation verify gcal-copy-ext-<version>.zip --repo yut0takagi/gcal-copy-ext
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ZIP }}
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+
+      - name: Upload to the Chrome Web Store
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          call() { curl -sS --fail-with-body -H "Authorization: Bearer ${TOKEN}" "$@"; }
+
+          if ! res=$(call -X POST -T "$ZIP" "${API}/upload/v2/${ITEM}:upload"); then
+            echo "$res"; exit 1
+          fi
+          echo "$res"
+          state=$(jq -r .uploadState <<<"$res")
+
+          # 処理が非同期になったときは fetchStatus で完了を待つ。
+          # 状態名は公式ドキュメントの例が UPLOAD_IN_PROGRESS、enum の定義が IN_PROGRESS と揺れているので両方見る
+          for _ in $(seq 30); do
+            case "$state" in
+              IN_PROGRESS|UPLOAD_IN_PROGRESS) ;;
+              *) break ;;
+            esac
+            sleep 10
+            if ! res=$(call "${API}/v2/${ITEM}:fetchStatus"); then
+              echo "$res"; exit 1
+            fi
+            state=$(jq -r .lastAsyncUploadState <<<"$res")
+          done
+
+          if [ "$state" != SUCCEEDED ]; then
+            echo "::error::upload did not succeed: ${state}"
+            exit 1
+          fi
+
+      # STAGED_PUBLISH: 審査に通っても自動では公開せず、ダッシュボードから手動で公開する
+      - name: Submit for review
+        env:
+          TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          call() { curl -sS --fail-with-body -H "Authorization: Bearer ${TOKEN}" "$@"; }
+
+          if ! res=$(call -X POST -H 'Content-Type: application/json' \
+              -d '{"publishType":"STAGED_PUBLISH"}' "${API}/v2/${ITEM}:publish"); then
+            echo "$res"; exit 1
+          fi
+          echo "$res"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "$ZIP"

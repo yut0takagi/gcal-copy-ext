@@ -49,6 +49,10 @@ Edge など Chromium 系のブラウザでも同じ手順で読み込めます�
 - 予定の情報はクリップボードへ書き込むだけで、外部には送信しません。動作するのは `https://calendar.google.com/calendar/*` のページだけです。詳しくは[プライバシーポリシー](PRIVACY.md)を参照してください
 - Google が提供・承認している拡張機能ではありません
 
+## リリース
+
+新しいバージョンの出し方は [RELEASING.md](RELEASING.md) にまとめています。
+
 ## ライセンス
 
 [Apache License 2.0](LICENSE)
